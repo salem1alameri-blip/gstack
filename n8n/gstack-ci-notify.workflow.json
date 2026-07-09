@@ -1,0 +1,132 @@
+{
+  "name": "gstack CI Notify",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## gstack CI → n8n\n\nThis workflow receives CI results from the `CI + n8n Notify` GitHub Action\n(`.github/workflows/ci-n8n.yml`).\n\n**Setup**\n1. Open the **Webhook** node, copy its **Production URL**.\n2. In GitHub → repo → Settings → Secrets and variables → Actions, add a\n   secret named `N8N_WEBHOOK_URL` with that URL.\n3. Activate this workflow (toggle top-right).\n4. Wire your real Slack / email credentials into the two notify nodes.\n\nIncoming payload fields live under `{{ $json.body }}`:\nstatus, event, repository, branch, sha, short_sha, actor, run_url, pr_number.",
+        "height": 320,
+        "width": 380
+      },
+      "id": "sticky-notes",
+      "name": "Setup notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-160, 40]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gstack-ci",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-node",
+      "name": "CI Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [280, 300],
+      "webhookId": "gstack-ci-notify"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "status-is-success",
+              "leftValue": "={{ $json.body.status }}",
+              "rightValue": "success",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-success",
+      "name": "CI passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "",
+          "mode": "name"
+        },
+        "text": "=✅ *CI passed* on `{{ $json.body.repository }}`\nBranch: `{{ $json.body.branch }}` @ `{{ $json.body.short_sha }}`\nBy: {{ $json.body.actor }}\n<{{ $json.body.run_url }}|View run>",
+        "otherOptions": {}
+      },
+      "id": "slack-success",
+      "name": "Notify success (Slack)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [820, 180],
+      "notesInFlow": true,
+      "notes": "Set your Slack credential + channel. Swap for Email/Discord/etc. as needed."
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "",
+          "mode": "name"
+        },
+        "text": "=❌ *CI FAILED* on `{{ $json.body.repository }}`\nBranch: `{{ $json.body.branch }}` @ `{{ $json.body.short_sha }}`\nBy: {{ $json.body.actor }}\nEvent: {{ $json.body.event }}\n<{{ $json.body.run_url }}|Open the failing run>",
+        "otherOptions": {}
+      },
+      "id": "slack-failure",
+      "name": "Notify failure (Slack)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [820, 420],
+      "notesInFlow": true,
+      "notes": "Set your Slack credential + channel. This branch is where you'd also open an issue, page on-call, etc."
+    }
+  ],
+  "connections": {
+    "CI Webhook": {
+      "main": [
+        [
+          {
+            "node": "CI passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CI passed?": {
+      "main": [
+        [
+          {
+            "node": "Notify success (Slack)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify failure (Slack)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

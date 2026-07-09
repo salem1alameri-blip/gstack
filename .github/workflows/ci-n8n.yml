@@ -1,0 +1,98 @@
+name: CI + n8n Notify
+
+# Runs the free test gate on every push and pull request, then hands the
+# result off to an n8n instance via webhook. n8n owns everything downstream
+# (Slack / email / deploy trigger) so CI stays green-or-red on its own and is
+# never blocked by an n8n outage.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: ci-n8n-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Free test gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Verify generated skill docs are fresh
+        run: |
+          bun run gen:skill-docs
+          git diff --exit-code || {
+            echo "::error::Generated SKILL.md files are stale. Run: bun run gen:skill-docs"
+            exit 1
+          }
+
+      - name: Run free tests
+        run: bun test
+
+  notify-n8n:
+    name: Notify n8n
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send result to n8n webhook
+        env:
+          N8N_WEBHOOK_URL: ${{ secrets.N8N_WEBHOOK_URL }}
+          RESULT: ${{ needs.test.result }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${N8N_WEBHOOK_URL:-}" ]; then
+            echo "N8N_WEBHOOK_URL secret not set — skipping n8n notification."
+            exit 0
+          fi
+
+          # Build the payload with jq so message text is safely JSON-escaped.
+          PAYLOAD=$(jq -n \
+            --arg event        "${{ github.event_name }}" \
+            --arg status       "${RESULT}" \
+            --arg repository   "${{ github.repository }}" \
+            --arg ref          "${{ github.ref }}" \
+            --arg ref_name     "${{ github.ref_name }}" \
+            --arg sha          "${{ github.sha }}" \
+            --arg actor        "${{ github.actor }}" \
+            --arg workflow     "${{ github.workflow }}" \
+            --arg run_id       "${{ github.run_id }}" \
+            --arg run_url      "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg pr_number    "${{ github.event.pull_request.number }}" \
+            '{
+              event:      $event,
+              status:     $status,
+              repository: $repository,
+              ref:        $ref,
+              branch:     $ref_name,
+              sha:        $sha,
+              short_sha:  ($sha | .[0:7]),
+              actor:      $actor,
+              workflow:   $workflow,
+              run_id:     $run_id,
+              run_url:    $run_url,
+              pr_number:  $pr_number
+            }')
+
+          echo "Posting CI result to n8n (status=${RESULT})..."
+
+          # --fail-with-body surfaces n8n errors without leaking the URL.
+          # Best-effort: a flaky n8n must not turn a green build red.
+          curl --silent --show-error --fail-with-body \
+            --max-time 30 \
+            --retry 3 --retry-delay 2 --retry-connrefused \
+            -X POST "${N8N_WEBHOOK_URL}" \
+            -H 'Content-Type: application/json' \
+            -d "${PAYLOAD}" \
+          || echo "::warning::n8n webhook call failed — CI result is still authoritative on GitHub."
